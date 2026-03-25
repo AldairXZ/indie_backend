@@ -302,7 +302,7 @@ app.post('/api/webauthn/register/options', async (req, res) => {
 
     const options = {
         challenge: currentRegisteringChallenge,
-        rp: { name: "IndieHub UTEQ", id: "localhost" },
+        rp: { name: "IndieHub UTEQ", id: "indie-angular.vercel.app" },
         user: { id: userId.toString(), name: username, displayName: username },
         pubKeyCredParams: [{ alg: -7, type: "public-key" }],
         timeout: 60000,
