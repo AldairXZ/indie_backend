@@ -4,8 +4,6 @@ const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const pool = require('./db');
-const https = require('https');
-const fs = require('fs');
 
 dotenv.config();
 
@@ -13,10 +11,6 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-
-const privateKey = fs.readFileSync('key.pem', 'utf8');
-const certificate = fs.readFileSync('cert.crt', 'utf8');
-const credentials = { key: privateKey, cert: certificate };
 
 const verifyToken = (req, res, next) => {
   const bearerHeader = req.headers['authorization'];
@@ -381,6 +375,4 @@ app.post('/api/webauthn/login/verify', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-const httpsServer = https.createServer(credentials, app);
-
-httpsServer.listen(PORT, () => console.log(`Servidor HTTPS corriendo en el puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor corriendo en el puerto ${PORT}`));
