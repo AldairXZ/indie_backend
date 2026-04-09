@@ -379,5 +379,23 @@ app.post('/api/webauthn/login/verify', async (req, res) => {
     }
 });
 
+app.get('/api/games/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await pool.query(`
+      SELECT p.*, c.name as category, u.username as developer
+      FROM products p
+      JOIN categories c ON p.category_id = c.id
+      JOIN users u ON p.developer_id = u.id
+      WHERE p.id = $1
+    `, [id]);
+
+    if (rows.length === 0) return res.status(404).json({ message: 'Juego no encontrado' });
+    res.json(rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor corriendo en el puerto ${PORT}`));
