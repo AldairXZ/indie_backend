@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
 const { authenticator } = require('otplib');
 const QRCode = require('qrcode');
+const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const pool = require('./db');
 
@@ -426,6 +427,69 @@ app.post('/api/2fa/verify', async (req, res) => {
     res.json({ message: '2FA Activado correctamente' });
   } else {
     res.status(400).json({ message: 'Código inválido' });
+  }
+});
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'tu_correo_proyecto@gmail.com', // Tu correo real
+    pass: 'tu_contraseña_de_aplicacion'   // Tu contraseña de aplicación de Google
+  }
+});
+
+// Almacén temporal para los códigos generados
+const codigos2FA = new Map();
+
+// 2. Ruta para ENVIAR el correo
+app.post('/api/2fa/send-email', async (req, res) => {
+  const { email } = req.body;
+  
+  // Generar un código aleatorio de 6 dígitos
+  const codigo = Math.floor(100000 + Math.random() * 900000).toString();
+  
+  // Guardar el código temporalmente asociado a ese correo
+  codigos2FA.set(email, codigo);
+
+  // Configurar el diseño del correo
+  const mailOptions = {
+    from: 'IndieHub Security <tu_correo_proyecto@gmail.com>',
+    to: email,
+    subject: '🔒 Tu código de seguridad de IndieHub',
+    html: `
+      <h2>Autenticación en IndieHub</h2>
+      <p>Has solicitado activar la verificación en dos pasos. Tu código de seguridad es:</p>
+      <h1 style="color: #6366f1; letter-spacing: 5px;">${codigo}</h1>
+      <p>Si no solicitaste esto, ignora este mensaje.</p>
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    res.json({ message: 'Correo enviado exitosamente' });
+  } catch (error) {
+    console.error("Error enviando correo:", error);
+    res.status(500).json({ error: 'No se pudo enviar el correo' });
+  }
+});
+
+// 3. Ruta para VERIFICAR el código
+app.post('/api/2fa/verify', async (req, res) => {
+  const { userId, email, code } = req.body;
+  
+  // Buscar si el código que guardamos coincide con el que mandó el usuario
+  const codigoGuardado = codigos2FA.get(email);
+
+  if (codigoGuardado && codigoGuardado === code) {
+    // ¡Es correcto! Actualizamos la base de datos de Supabase
+    await pool.query('UPDATE users SET two_factor_enabled = TRUE WHERE id = $1', [userId]);
+    
+    // Borramos el código por seguridad
+    codigos2FA.delete(email); 
+    
+    res.json({ message: '2FA Activado correctamente' });
+  } else {
+    res.status(400).json({ message: 'Código inválido o expirado' });
   }
 });
 
