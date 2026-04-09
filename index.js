@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
+const { authenticator } = require('otplib');
+const QRCode = require('qrcode');
 const crypto = require('crypto');
 const pool = require('./db');
 
@@ -394,6 +396,36 @@ app.get('/api/games/:id', async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.get('/api/2fa/setup', async (req, res) => {
+  try {
+    const { userId } = req.query; // En producción usa el ID del JWT
+    const secret = authenticator.generateSecret();
+    const otpauth = authenticator.keyuri(userId, 'IndieHub', secret);
+    const qrImageUrl = await QRCode.toDataURL(otpauth);
+
+    await pool.query('UPDATE users SET two_factor_secret = $1 WHERE id = $2', [secret, userId]);
+
+    res.json({ qrImageUrl, secret });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/2fa/verify', async (req, res) => {
+  const { userId, token } = req.body;
+  const { rows } = await pool.query('SELECT two_factor_secret FROM users WHERE id = $1', [userId]);
+  
+  const isValid = authenticator.check(token, rows[0].two_factor_secret);
+
+  if (isValid) {
+    await pool.query('UPDATE users SET two_factor_enabled = TRUE WHERE id = $1', [userId]);
+    res.json({ message: '2FA Activado correctamente' });
+  } else {
+    res.status(400).json({ message: 'Código inválido' });
   }
 });
 
