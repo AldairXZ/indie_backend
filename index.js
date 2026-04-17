@@ -2,10 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
-const { authenticator } = require('otplib');
-const QRCode = require('qrcode');
-const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 const pool = require('./db');
 
 dotenv.config();
@@ -57,7 +55,7 @@ app.post('/api/login', async (req, res) => {
       { expiresIn: '24h' }
     );
     
-    res.json({ token, user: { id: user.id, username: user.username, email: user.email, permissions } });
+    res.json({ token, user: { id: user.id, username: user.username, email: user.email, permissions, two_factor_enabled: user.two_factor_enabled } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -376,7 +374,7 @@ app.post('/api/webauthn/login/verify', async (req, res) => {
           { expiresIn: '24h' }
         );
         
-        res.json({ token, user: { id: user.id, username: user.username, email: user.email, permissions } });
+        res.json({ token, user: { id: user.id, username: user.username, email: user.email, permissions, two_factor_enabled: user.two_factor_enabled } });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -400,93 +398,55 @@ app.get('/api/games/:id', async (req, res) => {
   }
 });
 
-
-app.get('/api/2fa/setup', async (req, res) => {
-  try {
-    const { userId } = req.query; // En producción usa el ID del JWT
-    const secret = authenticator.generateSecret();
-    const otpauth = authenticator.keyuri(userId, 'IndieHub', secret);
-    const qrImageUrl = await QRCode.toDataURL(otpauth);
-
-    await pool.query('UPDATE users SET two_factor_secret = $1 WHERE id = $2', [secret, userId]);
-
-    res.json({ qrImageUrl, secret });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/2fa/verify', async (req, res) => {
-  const { userId, token } = req.body;
-  const { rows } = await pool.query('SELECT two_factor_secret FROM users WHERE id = $1', [userId]);
-  
-  const isValid = authenticator.check(token, rows[0].two_factor_secret);
-
-  if (isValid) {
-    await pool.query('UPDATE users SET two_factor_enabled = TRUE WHERE id = $1', [userId]);
-    res.json({ message: '2FA Activado correctamente' });
-  } else {
-    res.status(400).json({ message: 'Código inválido' });
-  }
-});
-
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'tu_correo_proyecto@gmail.com', // Tu correo real
-    pass: 'tu_contraseña_de_aplicacion'   // Tu contraseña de aplicación de Google
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   }
 });
 
-// Almacén temporal para los códigos generados
 const codigos2FA = new Map();
 
-// 2. Ruta para ENVIAR el correo
 app.post('/api/2fa/send-email', async (req, res) => {
   const { email } = req.body;
-  
-  // Generar un código aleatorio de 6 dígitos
+  if (!email) return res.status(400).json({ error: 'Email requerido' });
+
   const codigo = Math.floor(100000 + Math.random() * 900000).toString();
-  
-  // Guardar el código temporalmente asociado a ese correo
   codigos2FA.set(email, codigo);
 
-  // Configurar el diseño del correo
   const mailOptions = {
-    from: 'IndieHub Security <tu_correo_proyecto@gmail.com>',
+    from: `"IndieHub Security" <${process.env.EMAIL_USER}>`,
     to: email,
-    subject: '🔒 Tu código de seguridad de IndieHub',
+    subject: 'Código de verificación IndieHub',
     html: `
-      <h2>Autenticación en IndieHub</h2>
-      <p>Has solicitado activar la verificación en dos pasos. Tu código de seguridad es:</p>
-      <h1 style="color: #6366f1; letter-spacing: 5px;">${codigo}</h1>
-      <p>Si no solicitaste esto, ignora este mensaje.</p>
+      <div style="background-color: #0f1115; color: white; padding: 40px; font-family: sans-serif; border-radius: 10px; text-align: center;">
+        <h1 style="color: #6366f1;">IndieHub</h1>
+        <p>Tu código de seguridad para activar la doble autenticación es:</p>
+        <div style="background: #161920; padding: 20px; border: 1px solid #6366f1; border-radius: 8px; font-size: 32px; letter-spacing: 10px; color: #818cf8; font-weight: bold; margin: 20px 0;">
+          ${codigo}
+        </div>
+        <p style="color: #9ca3af; font-size: 12px;">Si no solicitaste esto, puedes ignorar el correo.</p>
+      </div>
     `
   };
 
   try {
     await transporter.sendMail(mailOptions);
-    res.json({ message: 'Correo enviado exitosamente' });
+    res.json({ message: 'Correo enviado' });
   } catch (error) {
-    console.error("Error enviando correo:", error);
-    res.status(500).json({ error: 'No se pudo enviar el correo' });
+    console.error("Error SMTP:", error);
+    res.status(500).json({ error: 'Fallo al enviar correo' });
   }
 });
 
-// 3. Ruta para VERIFICAR el código
 app.post('/api/2fa/verify', async (req, res) => {
   const { userId, email, code } = req.body;
-  
-  // Buscar si el código que guardamos coincide con el que mandó el usuario
   const codigoGuardado = codigos2FA.get(email);
 
   if (codigoGuardado && codigoGuardado === code) {
-    // ¡Es correcto! Actualizamos la base de datos de Supabase
     await pool.query('UPDATE users SET two_factor_enabled = TRUE WHERE id = $1', [userId]);
-    
-    // Borramos el código por seguridad
     codigos2FA.delete(email); 
-    
     res.json({ message: '2FA Activado correctamente' });
   } else {
     res.status(400).json({ message: 'Código inválido o expirado' });
