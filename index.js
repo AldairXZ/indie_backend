@@ -48,9 +48,12 @@ io.on('connection', (socket) => {
 });
 
 app.use(cors({
-  origin: ['https://indie-angular.vercel.app', 'http://localhost:4200'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true
+    origin: [
+        'https://indie-angular-aldairxzs-projects.vercel.app', // Tu página en vivo
+        'http://localhost:4200' // Tu entorno local para pruebas
+    ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
