@@ -47,11 +47,16 @@ io.on('connection', (socket) => {
   });
 });
 
+// 2. Configuración dinámica de CORS para aceptar todas las URLs de Vercel y localhost
 app.use(cors({
-    origin: [
-        'https://indie-angular-aldairxzs-projects.vercel.app', // Tu página en vivo
-        'http://localhost:4200' // Tu entorno local para pruebas
-    ],
+    origin: function (origin, callback) {
+        // Permite peticiones sin origin (como Postman), desde localhost, o desde cualquier link de Vercel
+        if (!origin || origin.startsWith('http://localhost') || origin.includes('vercel.app')) {
+            callback(null, true);
+        } else {
+            callback(new Error('No permitido por CORS'));
+        }
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
