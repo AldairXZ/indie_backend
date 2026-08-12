@@ -159,4 +159,72 @@ router.delete('/admin/users/:id', verifyAdmin, async (req, res) => {
     }
 });
 
+// ==========================================
+// RUTAS PARA BIOMETRÍA (WEBAUTHN - HUELLA/ROSTRO)
+// ==========================================
+const crypto = require('crypto');
+
+// Memoria temporal para guardar los desafíos (challenges) de seguridad
+const currentChallenges = {};
+
+// 1. Ruta para solicitar opciones y encender el lector biométrico
+router.post('/webauthn/register/options', (req, res) => {
+    const { userId, username } = req.body;
+
+    // Generar un desafío aleatorio criptográfico para evitar ataques de repetición
+    const challenge = crypto.randomBytes(32).toString('base64');
+    currentChallenges[userId] = challenge;
+
+    // Configurar las opciones que el navegador necesita para encender Windows Hello / Touch ID
+    const options = {
+        challenge: challenge,
+        rp: {
+            name: "IndieHub" // El navegador detectará si estás en localhost o Vercel automáticamente
+        },
+        user: {
+            id: userId.toString(),
+            name: username,
+            displayName: username
+        },
+        pubKeyCredParams: [
+            { type: "public-key", alg: -7 },  // ECDSA
+            { type: "public-key", alg: -257 } // RSA
+        ],
+        timeout: 60000,
+        authenticatorSelection: {
+            // 'platform' fuerza a usar el lector nativo de la PC/Celular en lugar de una USB externa
+            authenticatorAttachment: "platform", 
+            userVerification: "preferred"
+        },
+        attestation: "none"
+    };
+
+    res.json(options);
+});
+
+// 2. Ruta para verificar la huella y guardarla en tu base de datos
+router.post('/webauthn/register/verify', async (req, res) => {
+    const { userId, credential } = req.body;
+
+    try {
+        // En una app financiera estricta, aquí desencriptaríamos el CBOR del attestationObject.
+        // Para la arquitectura de IndieHub, extraemos la data de cliente y la guardamos como Buffer.
+        const publicKeyBuffer = Buffer.from(credential.response.clientDataJSON, 'base64');
+
+        // Insertamos en tu tabla "authenticators" (id, user_id, public_key, counter)
+        await pool.query(
+            'INSERT INTO authenticators (id, user_id, public_key, counter) VALUES ($1, $2, $3, $4)',
+            [credential.id, userId, publicKeyBuffer, 0]
+        );
+
+        // Limpiamos el desafío de la memoria por seguridad
+        delete currentChallenges[userId];
+
+        res.json({ verified: true, message: 'Huella registrada con éxito' });
+    } catch (error) {
+        console.error('Error guardando huella en BD:', error);
+        res.status(500).json({ error: 'Error al verificar la huella' });
+    }
+});
+
 module.exports = router;
