@@ -343,13 +343,31 @@ app.post('/api/webauthn/register/options', async (req, res) => {
     const challenge = crypto.randomBytes(32);
     currentRegisteringChallenge = challenge.toString('base64');
 
+    // El "rp.id" DEBE coincidir exactamente (o ser un sufijo de dominio
+    // registrable) con el dominio que está sirviendo al frontend en el
+    // navegador. Antes estaba fijo a "indie-angular.vercel.app", así que
+    // cualquier otro origen (localhost, previews de Vercel, dominio propio,
+    // etc.) provocaba el SecurityError y el diálogo de huella se quedaba
+    // pegado sin pedir nunca la huella. Ahora se calcula dinámicamente a
+    // partir del origin real de la petición.
+    const origin = req.headers.origin || req.headers.referer || '';
+    let rpId = 'indie-angular.vercel.app';
+    try {
+        if (origin) rpId = new URL(origin).hostname;
+    } catch (e) {
+        console.warn('No se pudo derivar el RP ID desde el origin recibido:', origin);
+    }
+
     const options = {
         challenge: currentRegisteringChallenge,
-        rp: { name: "IndieHub UTEQ", id: "indie-angular.vercel.app" },
+        rp: { name: "IndieHub UTEQ", id: rpId },
         user: { id: userId.toString(), name: username, displayName: username },
-        pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+        pubKeyCredParams: [
+            { alg: -7, type: "public-key" },   // ES256
+            { alg: -257, type: "public-key" }  // RS256 (evita el warning de compatibilidad)
+        ],
         timeout: 60000,
-        attestation: "direct",
+        attestation: "none",
         authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" }
     };
     res.json(options);
