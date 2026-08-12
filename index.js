@@ -5,8 +5,8 @@ const dotenv = require('dotenv');
 const { Server } = require('socket.io'); // <-- Agrega esta línea
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
 const pool = require('./db');
+const logAudit = require('./auditHelper');
 
 dotenv.config();
 
@@ -75,6 +75,19 @@ const verifyToken = (req, res, next) => {
   });
 };
 
+const verifyAdmin = (req, res, next) => {
+  const bearerHeader = req.headers['authorization'];
+  if (!bearerHeader) return res.status(403).json({ message: 'Token requerido' });
+
+  const token = bearerHeader.split(' ')[1];
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(401).json({ message: 'Token inválido' });
+    if (decoded.role !== 'admin') return res.status(403).json({ message: 'Privilegios insuficientes' });
+    req.user = decoded;
+    next();
+  });
+};
+
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -95,12 +108,12 @@ app.post('/api/login', async (req, res) => {
     const permissions = permissionsRows.map(row => row.name);
     
     const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email, permissions },
+      { id: user.id, username: user.username, email: user.email, role: user.role, permissions },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
     
-    res.json({ token, user: { id: user.id, username: user.username, email: user.email, permissions, two_factor_enabled: user.two_factor_enabled } });
+    res.json({ token, user: { id: user.id, username: user.username, email: user.email, role: user.role, permissions } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -336,6 +349,80 @@ app.delete('/api/wishlist/:productId', verifyToken, async (req, res) => {
   }
 });
 
+// ==========================================
+// RUTAS DEL PANEL DE ADMINISTRADOR
+// ==========================================
+
+app.get('/api/admin/users', verifyAdmin, async (req, res) => {
+    try {
+        const { rows } = await pool.query(`
+            SELECT id, username, email, role, is_active, last_login, requires_password_change
+            FROM users
+            WHERE deleted_at IS NULL
+            ORDER BY id ASC
+        `);
+        res.json(rows);
+    } catch (error) {
+        console.error('Error obteniendo usuarios:', error);
+        res.status(500).json({ error: 'Error obteniendo usuarios' });
+    }
+});
+
+app.get('/api/admin/logs', verifyAdmin, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100');
+        res.json(rows);
+    } catch (error) {
+        console.error('Error obteniendo bitácora:', error);
+        res.status(500).json({ error: 'Error obteniendo bitácora' });
+    }
+});
+
+app.put('/api/admin/users/:id/role', verifyAdmin, async (req, res) => {
+    const { role } = req.body;
+    const { id } = req.params;
+    const ip = req.ip || req.connection.remoteAddress;
+
+    try {
+        await pool.query('UPDATE users SET role = $1 WHERE id = $2', [role, id]);
+        await logAudit(req.user.id, req.user.username, `CAMBIO_GRUPO_A_${String(role).toUpperCase()}_USUARIO_${id}`, ip);
+        res.json({ message: 'Rol actualizado' });
+    } catch (error) {
+        console.error('Error actualizando rol:', error);
+        res.status(500).json({ error: 'Error actualizando rol' });
+    }
+});
+
+app.put('/api/admin/users/:id/status', verifyAdmin, async (req, res) => {
+    const { is_active } = req.body;
+    const { id } = req.params;
+    const ip = req.ip || req.connection.remoteAddress;
+
+    try {
+        await pool.query('UPDATE users SET is_active = $1 WHERE id = $2', [is_active, id]);
+        const accion = is_active ? 'HABILITO' : 'DESHABILITO';
+        await logAudit(req.user.id, req.user.username, `SE_${accion}_USUARIO_${id}`, ip);
+        res.json({ message: 'Estado de cuenta actualizado' });
+    } catch (error) {
+        console.error('Error actualizando estado:', error);
+        res.status(500).json({ error: 'Error actualizando estado' });
+    }
+});
+
+app.delete('/api/admin/users/:id', verifyAdmin, async (req, res) => {
+    const { id } = req.params;
+    const ip = req.ip || req.connection.remoteAddress;
+
+    try {
+        await pool.query('UPDATE users SET deleted_at = CURRENT_TIMESTAMP, is_active = false WHERE id = $1', [id]);
+        await logAudit(req.user.id, req.user.username, `ELIMINACION_LOGICA_USUARIO_${id}`, ip);
+        res.json({ message: 'Usuario eliminado del sistema' });
+    } catch (error) {
+        console.error('Error eliminando usuario:', error);
+        res.status(500).json({ error: 'Error eliminando usuario' });
+    }
+});
+
 let currentRegisteringChallenge = null;
 
 app.post('/api/webauthn/register/options', async (req, res) => {
@@ -429,12 +516,12 @@ app.post('/api/webauthn/login/verify', async (req, res) => {
         const permissions = permissionsRows.map(row => row.name);
         
         const token = jwt.sign(
-          { id: user.id, username: user.username, email: user.email, permissions },
+          { id: user.id, username: user.username, email: user.email, role: user.role, permissions },
           process.env.JWT_SECRET,
           { expiresIn: '24h' }
         );
         
-        res.json({ token, user: { id: user.id, username: user.username, email: user.email, permissions, two_factor_enabled: user.two_factor_enabled } });
+        res.json({ token, user: { id: user.id, username: user.username, email: user.email, role: user.role, permissions } });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -455,61 +542,6 @@ app.get('/api/games/:id', async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
-  }
-});
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
-
-const codigos2FA = new Map();
-
-app.post('/api/2fa/send-email', async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email requerido' });
-
-  const codigo = Math.floor(100000 + Math.random() * 900000).toString();
-  codigos2FA.set(email, codigo);
-
-  const mailOptions = {
-    from: `"IndieHub Security" <${process.env.EMAIL_USER}>`,
-    to: email,
-    subject: 'Código de verificación IndieHub',
-    html: `
-      <div style="background-color: #0f1115; color: white; padding: 40px; font-family: sans-serif; border-radius: 10px; text-align: center;">
-        <h1 style="color: #6366f1;">IndieHub</h1>
-        <p>Tu código de seguridad para activar la doble autenticación es:</p>
-        <div style="background: #161920; padding: 20px; border: 1px solid #6366f1; border-radius: 8px; font-size: 32px; letter-spacing: 10px; color: #818cf8; font-weight: bold; margin: 20px 0;">
-          ${codigo}
-        </div>
-        <p style="color: #9ca3af; font-size: 12px;">Si no solicitaste esto, puedes ignorar el correo.</p>
-      </div>
-    `
-  };
-
-  try {
-    await transporter.sendMail(mailOptions);
-    res.json({ message: 'Correo enviado' });
-  } catch (error) {
-    console.error("Error SMTP:", error);
-    res.status(500).json({ error: 'Fallo al enviar correo' });
-  }
-});
-
-app.post('/api/2fa/verify', async (req, res) => {
-  const { userId, email, code } = req.body;
-  const codigoGuardado = codigos2FA.get(email);
-
-  if (codigoGuardado && codigoGuardado === code) {
-    await pool.query('UPDATE users SET two_factor_enabled = TRUE WHERE id = $1', [userId]);
-    codigos2FA.delete(email); 
-    res.json({ message: '2FA Activado correctamente' });
-  } else {
-    res.status(400).json({ message: 'Código inválido o expirado' });
   }
 });
 
