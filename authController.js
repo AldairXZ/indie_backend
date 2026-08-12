@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('./db');
 const logAudit = require('./auditHelper');
+const crypto = require('crypto'); // Necesario para la biometría
 
 const router = express.Router();
 
@@ -15,7 +16,6 @@ router.post('/login', async (req, res) => {
     const ip = req.ip || req.connection.remoteAddress;
 
     try {
-        // En tu BD la contraseña se llama password_hash
         const userResult = await pool.query('SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL', [email]);
         if (userResult.rows.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
@@ -162,24 +162,26 @@ router.delete('/admin/users/:id', verifyAdmin, async (req, res) => {
 // ==========================================
 // RUTAS PARA BIOMETRÍA (WEBAUTHN - HUELLA/ROSTRO)
 // ==========================================
-const crypto = require('crypto');
 
-// Memoria temporal para guardar los desafíos (challenges) de seguridad
 const currentChallenges = {};
 
-// 1. Ruta para solicitar opciones y encender el lector biométrico
 router.post('/webauthn/register/options', (req, res) => {
     const { userId, username } = req.body;
 
-    // Generar un desafío aleatorio criptográfico para evitar ataques de repetición
+    // Detectar el dominio exacto desde donde el frontend hace la petición (Vercel o localhost)
+    const origin = req.headers.origin || 'http://localhost:4200';
+    const rpId = new URL(origin).hostname; 
+
+    // Generar un desafío aleatorio criptográfico
     const challenge = crypto.randomBytes(32).toString('base64');
     currentChallenges[userId] = challenge;
 
-    // Configurar las opciones que el navegador necesita para encender Windows Hello / Touch ID
+    // Configurar las opciones con el RP ID exacto
     const options = {
         challenge: challenge,
         rp: {
-            name: "IndieHub" // El navegador detectará si estás en localhost o Vercel automáticamente
+            name: "IndieHub",
+            id: rpId // ¡Soluciona el SecurityError de Vercel!
         },
         user: {
             id: userId.toString(),
@@ -187,12 +189,12 @@ router.post('/webauthn/register/options', (req, res) => {
             displayName: username
         },
         pubKeyCredParams: [
-            { type: "public-key", alg: -7 },  // ECDSA
-            { type: "public-key", alg: -257 } // RSA
+            { type: "public-key", alg: -7 },   // ES256
+            { type: "public-key", alg: -257 }, // RS256
+            { type: "public-key", alg: -37 }   // PS256 (Soluciona la advertencia)
         ],
         timeout: 60000,
         authenticatorSelection: {
-            // 'platform' fuerza a usar el lector nativo de la PC/Celular en lugar de una USB externa
             authenticatorAttachment: "platform", 
             userVerification: "preferred"
         },
@@ -202,22 +204,17 @@ router.post('/webauthn/register/options', (req, res) => {
     res.json(options);
 });
 
-// 2. Ruta para verificar la huella y guardarla en tu base de datos
 router.post('/webauthn/register/verify', async (req, res) => {
     const { userId, credential } = req.body;
 
     try {
-        // En una app financiera estricta, aquí desencriptaríamos el CBOR del attestationObject.
-        // Para la arquitectura de IndieHub, extraemos la data de cliente y la guardamos como Buffer.
         const publicKeyBuffer = Buffer.from(credential.response.clientDataJSON, 'base64');
 
-        // Insertamos en tu tabla "authenticators" (id, user_id, public_key, counter)
         await pool.query(
             'INSERT INTO authenticators (id, user_id, public_key, counter) VALUES ($1, $2, $3, $4)',
             [credential.id, userId, publicKeyBuffer, 0]
         );
 
-        // Limpiamos el desafío de la memoria por seguridad
         delete currentChallenges[userId];
 
         res.json({ verified: true, message: 'Huella registrada con éxito' });
