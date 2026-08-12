@@ -1,6 +1,8 @@
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const { Server } = require('socket.io'); // <-- Agrega esta línea
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
@@ -9,6 +11,41 @@ const pool = require('./db');
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Permite que Live Server (127.0.0.1:5500) se conecte sin problemas de CORS
+    methods: ["GET", "POST"]
+  }
+});
+
+io.on('connection', (socket) => {
+  console.log('Dispositivo conectado al ecosistema:', socket.id);
+
+  // --- NUEVO: PUENTE BLUETOOTH VIRTUAL ---
+  // Recibe los datos que genera el reloj y los rebota al teléfono
+  socket.on('wearable_enviar_datos', (data) => {
+    socket.broadcast.emit('telefono_recibir_datos_ble', data);
+  });
+  // ---------------------------------------
+
+  // Las funciones que ya tenías para la Smart TV
+  socket.on('telefono_compra_juego', (data) => {
+    io.emit('tv_actualizar_biblioteca', {
+        juegoId: data.juegoId,
+        mensaje: `¡${data.titulo} añadido a tu biblioteca!`
+    });
+  });
+
+  socket.on('wearable_ritmo_cardiaco', (data) => {
+    if(data.bpm > 100) {
+       io.emit('tv_alerta_wearable', {
+           mensaje: 'Ritmo cardíaco elevado detectado.'
+       });
+    }
+  });
+});
 
 app.use(cors({
   origin: ['https://indie-angular.vercel.app', 'http://localhost:4200'],
@@ -453,5 +490,8 @@ app.post('/api/2fa/verify', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor corriendo en el puerto ${PORT}`));
+const PORT = process.env.PORT || 3001;
+
+server.listen(PORT, () => {
+  console.log(`Servidor corriendo en el puerto ${PORT}`);
+});
